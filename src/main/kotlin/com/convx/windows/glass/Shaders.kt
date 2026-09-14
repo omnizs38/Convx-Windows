@@ -1,8 +1,9 @@
 /*
  * Shader sources ported 1:1 from Convx (Android), which vendors them from
- * Kyant0/backdrop v2.0.0 — Copyright 2025 Kyant0, Apache License 2.0.
- * AGSL and SkSL are the same dialect here, so the bodies are unchanged; only
- * the Kotlin wrapper differs (Skia RuntimeEffect instead of Android RuntimeShader).
+ * Kyant0/backdrop v2.0.0 - Copyright 2025 Kyant0, Apache License 2.0.
+ * AGSL and SkSL are the same dialect here, so the bodies are unchanged; only the Kotlin
+ * wrapper differs (Skia RuntimeEffect instead of Android RuntimeShader), plus one change
+ * noted at the highlight shader.
  */
 package com.convx.windows.glass
 
@@ -55,7 +56,7 @@ float circleMap(float x) {
 half4 main(float2 coord) {
     float2 halfSize = size * 0.5;
     float2 centeredCoord = (coord + offset) - halfSize;
-    float radius = radiusAt(coord, cornerRadii);
+    float radius = radiusAt(centeredCoord, cornerRadii);
 
     float sd = sdRoundedRect(centeredCoord, halfSize, radius);
     if (-sd >= refractionHeight) {
@@ -91,7 +92,7 @@ float circleMap(float x) {
 half4 main(float2 coord) {
     float2 halfSize = size * 0.5;
     float2 centeredCoord = (coord + offset) - halfSize;
-    float radius = radiusAt(coord, cornerRadii);
+    float radius = radiusAt(centeredCoord, cornerRadii);
 
     float sd = sdRoundedRect(centeredCoord, halfSize, radius);
     if (-sd >= refractionHeight) {
@@ -144,10 +145,17 @@ half4 main(float2 coord) {
     return color;
 }"""
 
+/*
+ * Only change from the Android source: `layout(color) uniform half4 color` became a plain
+ * `uniform half4 color`. `layout(color)` asks the host to colour-manage the value, which
+ * Android's `setColorUniform` does but `RuntimeShaderBuilder.uniform(name, r, g, b, a)`
+ * does not - the rim came out in the wrong space. Premultiplied values are passed instead,
+ * because an SkSL shader must return premultiplied colour.
+ */
 internal const val DefaultHighlightShaderString = """
 uniform float2 size;
 uniform float4 cornerRadii;
-layout(color) uniform half4 color;
+uniform half4 color;
 uniform float angle;
 uniform float falloff;
 
@@ -156,7 +164,7 @@ $RoundedRectSDF
 half4 main(float2 coord) {
     float2 halfSize = size * 0.5;
     float2 centeredCoord = coord - halfSize;
-    float radius = radiusAt(coord, cornerRadii);
+    float radius = radiusAt(centeredCoord, cornerRadii);
 
     float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
     float2 grad = gradSdRoundedRect(centeredCoord, halfSize, gradRadius);
