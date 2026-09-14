@@ -1,317 +1,333 @@
 package com.convx.windows.glass
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Stable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.isSpecified
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import org.jetbrains.skia.ColorFilter
-import org.jetbrains.skia.ColorMatrix
 import org.jetbrains.skia.FilterTileMode
 import org.jetbrains.skia.ImageFilter
 import org.jetbrains.skia.Matrix33
-import org.jetbrains.skia.Paint
-import org.jetbrains.skia.PaintMode
 import org.jetbrains.skia.RRect
 import org.jetbrains.skia.Rect
 import org.jetbrains.skia.RuntimeShaderBuilder
 import org.jetbrains.skia.SamplingMode
-import org.jetbrains.skia.Surface
-import kotlin.math.abs
-import kotlin.math.roundToInt
+import kotlin.math.ceil
 
-/** Which surfaces can individually opt in or out of glass, as on Android. */
-enum class GlassComponent { PLAYER, MINI_PLAYER, NAV_BAR, SIDE_PANEL }
+/** Largest lens depth, in dp, that `lensHeight` interpolates towards. */
+const val LENS_MAX_DP = 48f
 
-/** Same three rendering styles the Android app exposes. */
-enum class GlassStyle { LIQUID, BLUR, TRANSPARENT }
+/** The now-playing sheet blurs far harder than the rest of the chrome. */
+const val PLAYER_BLUR_MULTIPLIER = 4f
 
-/** Maximum lens refraction in dp when the 0..1 sliders sit at 1 — matches the original. */
-internal const val LENS_MAX_DP = 48f
-internal const val PLAYER_BLUR_MULTIPLIER = 4f
-internal const val OPAQUE_GLASS_SURFACE_OPACITY = 0.98f
-private const val EffectNoOpEpsilon = 0.002f
-private const val MinVisibleBlurPx = 0.05f
-private const val MinVisibleRimAlpha = 0.01f
-private val EdgeHighlightWidth: Dp = 0.8.dp
-private const val EdgeHighlightAlpha = 0.55f
-private const val HighlightAngleMin = 25f
-private const val HighlightAngleMax = 65f
-private const val HighlightAngleFrozen = (HighlightAngleMin + HighlightAngleMax) / 2f
-private const val MIN_GLASS_RESOLUTION_SCALE = 0.30f
-private const val FULL_QUALITY_BLUR_DP = 8f
+const val MIN_GLASS_RESOLUTION_SCALE = 0.30f
+const val FULL_QUALITY_BLUR_DP = 8f
 
-/** User-configurable parameters, ported field-for-field from the Android GlassEffectConfig. */
-@Stable
+val EdgeHighlightWidth: Dp = 0.8.dp
+const val EdgeHighlightAlpha = 0.55f
+
+/** Angle the Android build freezes the specular rim at. */
+const val HighlightAngleFrozen = 45f
+
+private const val HighlightAngleMin = 28f
+private const val HighlightAngleMax = 62f
+private const val HighlightDriftMillis = 9000
+private const val MinVisibleAlpha = 0.01f
+
+private val DefaultDarkTint = Color(0xFF4A4A4E)
+private val DefaultLightTint = Color(0xFFFAFAFA)
+
+enum class GlassStyle {
+    /** Sampled backdrop, vibrancy, blur, lens refraction and specular rim. */
+    LIQUID,
+
+    /** Sampled backdrop and blur only - no lens, no rim. */
+    BLUR,
+
+    /** No sampling at all: a flat translucent tint. Cheapest, and the fallback. */
+    TRANSPARENT,
+}
+
+@Immutable
 data class GlassEffectConfig(
-    val globalEnabled: Boolean = true,
+    val style: GlassStyle = GlassStyle.LIQUID,
     val vibrancy: Float = 1.2f,
     val blurRadius: Float = 2f,
     val lensHeight: Float = 0.4f,
     val lensAmount: Float = 0.6f,
-    val chromaticAberration: Boolean = false,
-    val depthEffect: Boolean = false,
+    val depthEffect: Float = 0f,
+    val chromaticAberration: Float = 0f,
     val surfaceTintColor: Color = Color.Unspecified,
-    val highlightColor: Color = Color.Unspecified,
-    val highlightOpacity: Float = EdgeHighlightAlpha,
-    val style: GlassStyle = GlassStyle.LIQUID,
     val surfaceOpacity: Float = 0.5f,
-    val textColor: Color = Color.White,
-    val playerEnabled: Boolean = true,
-    val miniPlayerEnabled: Boolean = true,
-    val navBarEnabled: Boolean = true,
-    val sidePanelEnabled: Boolean = true,
+    /** Slight top-down inner gleam. Not in the Android build; see README. */
+    val sheenOpacity: Float = 0.08f,
+    /** Drifts the specular rim instead of freezing it at [HighlightAngleFrozen]. */
+    val animateHighlight: Boolean = true,
 ) {
-    fun isEnabledFor(component: GlassComponent): Boolean =
-        globalEnabled && when (component) {
-            GlassComponent.PLAYER -> playerEnabled
-            GlassComponent.MINI_PLAYER -> miniPlayerEnabled
-            GlassComponent.NAV_BAR -> navBarEnabled
-            GlassComponent.SIDE_PANEL -> sidePanelEnabled
-        }
-
-    val anyComponentEnabled: Boolean
-        get() = globalEnabled &&
-            (playerEnabled || miniPlayerEnabled || navBarEnabled || sidePanelEnabled)
+    /** With a flat tint nothing samples pixels, so the backdrop need not be recorded. */
+    val needsBackdrop: Boolean get() = style != GlassStyle.TRANSPARENT
 }
 
 val LocalGlassEffectConfig = staticCompositionLocalOf { GlassEffectConfig() }
-val LocalAppBackdrop = staticCompositionLocalOf<LayerBackdrop> { error("No AppBackdrop provided") }
+val LocalAppBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 
-/** Vibrancy preference (0..2) → saturation multiplier; 1 matches backdrop's built-in vibrancy. */
-fun glassSaturation(vibrancy: Float): Float = 1f + 0.5f * vibrancy.coerceIn(0f, 2f)
-
-fun glassResolutionScale(blurRadiusDp: Float): Float {
-    val t = (blurRadiusDp / FULL_QUALITY_BLUR_DP).coerceIn(0f, 1f)
-    return 1f - t * (1f - MIN_GLASS_RESOLUTION_SCALE)
-}
-
-fun shouldUseTranslucentGlassFallback(
-    style: GlassStyle,
-    surfaceOpacity: Float = 0f,
-): Boolean = style == GlassStyle.TRANSPARENT || surfaceOpacity >= OPAQUE_GLASS_SURFACE_OPACITY
-
-/** Content colour guaranteed to read against the composited glass, as on Android. */
-fun glassContentColorFor(behind: Color, tint: Color, opacity: Float): Color {
-    val effective = if (tint.isSpecified) lerp(behind, tint, opacity.coerceIn(0f, 1f)) else behind
-    return if (effective.luminance() > 0.5f) Color(0xFF1A1A1A) else Color.White
-}
+/** Vibrancy maps to saturation exactly as in the Android app. */
+fun glassSaturation(vibrancy: Float): Float = 1f + 0.5f * vibrancy
 
 /**
- * Renders this composable as a liquid glass surface sampling [LocalAppBackdrop]:
- * vibrancy (saturation), blur, lens refraction with optional chromatic dispersion,
- * the specular rim, then the surface tint — the same order and the same shaders as
- * the Android app.
+ * Heavier blur destroys detail, so it can be sampled at a lower resolution for free.
+ * Matches the Android curve: full resolution up to a light blur, tapering to a floor.
+ */
+fun glassResolutionScale(blurRadiusDp: Float): Float =
+    if (blurRadiusDp <= 0f) {
+        1f
+    } else {
+        (FULL_QUALITY_BLUR_DP / (blurRadiusDp + FULL_QUALITY_BLUR_DP - 1f))
+            .coerceIn(MIN_GLASS_RESOLUTION_SCALE, 1f)
+    }
+
+fun shouldUseTranslucentGlassFallback(style: GlassStyle, surfaceOpacity: Float): Boolean =
+    style == GlassStyle.TRANSPARENT || surfaceOpacity >= 0.99f
+
+/**
+ * Applies the Convx liquid glass material to this surface.
+ *
+ * The pipeline is the Android one, in order: sample the backdrop region behind the surface,
+ * boost vibrancy, blur, refract through a rounded-rect lens, tint, gleam, rim.
+ *
+ * Everything except the tint, the gleam and the rim runs in *backdrop working space* -
+ * backdrop capture scale times [backdropScale] - and the finished shader is scaled back up
+ * with a local matrix. That keeps the expensive passes off full-resolution pixels, and it is
+ * also why the shader uniforms (radii, lens depth, lens amount, blur sigma) are all scaled:
+ * the first cut of this port mixed layout px with working px and the lens read far too deep
+ * on high-DPI displays.
  */
 @Composable
 fun Modifier.liquidGlass(
-    config: GlassEffectConfig = LocalGlassEffectConfig.current,
     shape: CornerBasedShape = RoundedCornerShape(0.dp),
-    applyEdgeEffects: Boolean = true,
+    config: GlassEffectConfig = LocalGlassEffectConfig.current,
     blurRadiusDp: Float = config.blurRadius,
+    applyEdgeEffects: Boolean = true,
     highlightAlpha: Float = EdgeHighlightAlpha,
     backdropScale: Float = glassResolutionScale(blurRadiusDp),
 ): Modifier {
     val backdrop = LocalAppBackdrop.current
-    val density = LocalDensity.current
-    val resolutionScale = backdropScale.coerceIn(0.05f, 1f)
+    val isLightTheme = MaterialTheme.colorScheme.surface.luminance() > 0.5f
+    val tint = when {
+        config.surfaceTintColor.isSpecified -> config.surfaceTintColor
+        isLightTheme -> DefaultLightTint
+        else -> DefaultDarkTint
+    }
+    val opacity = config.surfaceOpacity.coerceIn(0f, 1f)
 
-    val blurPx = remember(density, blurRadiusDp, resolutionScale) {
-        with(density) { blurRadiusDp.dp.toPx() } * resolutionScale
-    }
-    val saturation = remember(config.vibrancy) { glassSaturation(config.vibrancy) }
-    val lensHeightPx = remember(density, config.lensHeight) {
-        with(density) { (config.lensHeight * LENS_MAX_DP).dp.toPx() }
-    }
-    val lensAmountPx = remember(density, config.lensAmount) {
-        with(density) { (config.lensAmount * LENS_MAX_DP).dp.toPx() }
-    }
-    val rimWidthPx = with(density) { EdgeHighlightWidth.toPx() }
-
-    val surfaceTintColor = remember(config.surfaceTintColor) {
-        if (config.surfaceTintColor.isSpecified) config.surfaceTintColor else Color(0xFF4A4A4E)
+    if (backdrop == null || shouldUseTranslucentGlassFallback(config.style, opacity)) {
+        return this.clip(shape).background(tint.copy(alpha = opacity))
     }
 
-    if (shouldUseTranslucentGlassFallback(config.style, config.surfaceOpacity)) {
-        return this
-            .clip(shape)
-            .background(surfaceTintColor.copy(alpha = config.surfaceOpacity.coerceIn(0f, 1f)))
+    val liquid = config.style == GlassStyle.LIQUID
+    val drawRim = liquid && applyEdgeEffects && highlightAlpha > MinVisibleAlpha
+    val rimAngle = rememberHighlightAngle(enabled = drawRim && config.animateHighlight)
+
+    val scratch = remember { GlassScratch() }
+    val bounds = remember { GlassBounds() }
+    DisposableEffect(scratch) { onDispose { scratch.dispose() } }
+
+    val saturation = glassSaturation(config.vibrancy)
+    val saturationFilter = remember(saturation) {
+        if (saturation in 0.99f..1.01f) null else saturationColorFilter(saturation)
     }
-
-    val plainBlur = config.style == GlassStyle.BLUR
-    val applySaturation = abs(saturation - 1f) > EffectNoOpEpsilon
-    val applyBlur = blurPx > MinVisibleBlurPx
-    val applyLens = !plainBlur && applyEdgeEffects && (lensHeightPx > 0f || lensAmountPx > 0f)
-
-    val rimColor = if (config.highlightColor.isSpecified) config.highlightColor else Color.White
-    val rimAlpha = (highlightAlpha * (config.highlightOpacity / EdgeHighlightAlpha)).coerceIn(0f, 1f)
-    val drawRim = applyEdgeEffects && !plainBlur && rimAlpha >= MinVisibleRimAlpha
-
-    var positionInRoot by remember { mutableStateOf(Offset.Zero) }
+    val workingScale = backdropScale.coerceIn(0.05f, 1f)
 
     return this
         .clip(shape)
-        .onGloballyPositioned { positionInRoot = it.positionInRoot() }
+        // A plain holder, not state: the position is only ever read during draw, and using
+        // state here recomposed the whole subtree on every scrolled pixel.
+        .onPlaced { bounds.offsetInRoot = it.positionInRoot() }
         .drawWithContent {
             val image = backdrop.image
-            val w = size.width
-            val h = size.height
-            if (image != null && w >= 1f && h >= 1f) {
-                val radii = shape.cornerRadii(size, layoutDirection, this)
-                val pad = if (applyBlur) blurPadding(blurPx) else 0
-                val sw = (w + 2 * pad).roundToInt()
-                val sh = (h + 2 * pad).roundToInt()
-
-                // 1. Sample the backdrop region behind this surface, applying vibrancy
-                //    and blur while it is copied — the equivalent of the colorControls +
-                //    blur links of the Android RenderEffect chain.
-                val scale = backdrop.scale
-                val srcLeft = (positionInRoot.x - backdrop.origin.x - pad) * scale
-                val srcTop = (positionInRoot.y - backdrop.origin.y - pad) * scale
-                val src = Rect.makeXYWH(srcLeft, srcTop, sw * scale, sh * scale)
-
-                val staging = Surface.makeRasterN32Premul(sw, sh)
-                val samplePaint = Paint().apply {
-                    if (applySaturation) colorFilter = saturationColorFilter(saturation)
-                    if (applyBlur) {
-                        imageFilter = ImageFilter.makeBlur(blurPx, blurPx, FilterTileMode.CLAMP)
-                    }
-                }
-                staging.canvas.drawImageRect(
-                    image,
-                    src,
-                    Rect.makeWH(sw.toFloat(), sh.toFloat()),
-                    SamplingMode.LINEAR,
-                    samplePaint,
-                    true,
-                )
-                val sampled = staging.makeImageSnapshot()
-                val contentShader = sampled.makeShader(
-                    FilterTileMode.CLAMP,
-                    FilterTileMode.CLAMP,
-                    SamplingMode.LINEAR,
-                    Matrix33.makeTranslate(-pad.toFloat(), -pad.toFloat()),
-                )
-
-                val canvas = nativeCanvasOf()
-
-                // 2. Lens refraction (with optional chromatic dispersion).
-                val glassPaint = Paint()
-                glassPaint.shader = if (applyLens) {
-                    val effect = if (config.chromaticAberration) {
-                        GlassShaders.refractionWithDispersion
-                    } else {
-                        GlassShaders.refraction
-                    }
-                    RuntimeShaderBuilder(effect).apply {
-                        uniform("size", w, h)
-                        uniform("offset", 0f, 0f)
-                        uniform("cornerRadii", radii[0], radii[1], radii[2], radii[3])
-                        uniform("refractionHeight", lensHeightPx)
-                        uniform("refractionAmount", -lensAmountPx)
-                        uniform("depthEffect", if (config.depthEffect) 1f else 0f)
-                        if (config.chromaticAberration) uniform("chromaticAberration", 1f)
-                        child("content", contentShader)
-                    }.makeShader()
-                } else {
-                    contentShader
-                }
-
-                val rrect = RRect.makeComplexLTRB(0f, 0f, w, h, radii)
-                canvas.save()
-                canvas.clipRRect(rrect, true)
-                canvas.drawRRect(rrect, glassPaint)
-
-                // 3. Surface tint.
-                if (config.surfaceOpacity > 0f) {
-                    drawRect(color = surfaceTintColor.copy(alpha = config.surfaceOpacity), size = size)
-                }
-
-                // 4. Specular rim.
-                if (drawRim) {
-                    val inset = rimWidthPx / 2f
-                    val rimRect = RRect.makeComplexLTRB(
-                        inset, inset, w - inset, h - inset,
-                        FloatArray(4) { (radii[it] - inset).coerceAtLeast(0f) },
-                    )
-                    val rim = Paint().apply {
-                        mode = PaintMode.STROKE
-                        strokeWidth = rimWidthPx
-                        isAntiAlias = true
-                        shader = RuntimeShaderBuilder(GlassShaders.highlight).apply {
-                            uniform("size", w, h)
-                            uniform("cornerRadii", radii[0], radii[1], radii[2], radii[3])
-                            uniform(
-                                "color",
-                                rimColor.red,
-                                rimColor.green,
-                                rimColor.blue,
-                                rimAlpha,
-                            )
-                            uniform("angle", (HighlightAngleFrozen * Math.PI / 180f).toFloat())
-                            uniform("falloff", 2f)
-                        }.makeShader()
-                    }
-                    canvas.drawRRect(rimRect, rim)
-                }
-
-                canvas.restore()
-                sampled.close()
-                staging.close()
+            if (image == null || size.minDimension < 1f) {
+                drawRect(color = tint.copy(alpha = opacity))
+                drawContent()
+                return@drawWithContent
             }
+
+            val captureScale = backdrop.scale
+            val scale = (captureScale * workingScale).coerceIn(0.05f, 1f)
+            val sigma = blurRadiusToSigma(blurRadiusDp.dp.toPx() * scale)
+            val pad = if (sigma > 0f) ceil(sigma * BlurPaddingFactor).toInt().coerceAtLeast(1) else 1
+            val padLayout = pad / scale
+
+            val stageWidth = ceil(size.width * scale).toInt() + 2 * pad
+            val stageHeight = ceil(size.height * scale).toInt() + 2 * pad
+            val stage = scratch.surfaces.surfaceOf(stageWidth, stageHeight)
+            val stageCanvas = stage.canvas
+            stageCanvas.clear(0)
+
+            // Copy the region behind this surface out of the shared backdrop snapshot,
+            // padded so the blur and the lens never sample past the captured pixels.
+            val relativeX = bounds.offsetInRoot.x - backdrop.origin.x - padLayout
+            val relativeY = bounds.offsetInRoot.y - backdrop.origin.y - padLayout
+            val source = Rect.makeXYWH(
+                relativeX * captureScale,
+                relativeY * captureScale,
+                (size.width + 2 * padLayout) * captureScale,
+                (size.height + 2 * padLayout) * captureScale,
+            )
+            val samplePaint = scratch.samplePaint.apply {
+                colorFilter = saturationFilter
+                imageFilter = if (sigma > 0f) {
+                    ImageFilter.makeBlur(sigma, sigma, FilterTileMode.CLAMP)
+                } else {
+                    null
+                }
+            }
+            stageCanvas.drawImageRect(
+                image,
+                source,
+                Rect.makeWH(stageWidth.toFloat(), stageHeight.toFloat()),
+                SamplingMode.LINEAR,
+                samplePaint,
+                true,
+            )
+
+            val sampled = scratch.surfaces.snapshot()
+            val contentShader = sampled.makeShader(
+                FilterTileMode.CLAMP,
+                FilterTileMode.CLAMP,
+                SamplingMode.LINEAR,
+                // Shader origin at the surface's top-left rather than the padded stage's.
+                Matrix33.makeTranslate(-pad.toFloat(), -pad.toFloat()),
+            )
+
+            val radii = shape.cornerRadiiPx(size, layoutDirection, this)
+            val canvas = drawContext.canvas.nativeCanvas
+            val outline = RRect.makeComplexLTRB(0f, 0f, size.width, size.height, radii)
+
+            val lensHeightPx = (config.lensHeight * LENS_MAX_DP).dp.toPx() * scale
+            val lensAmountPx = (config.lensAmount * LENS_MAX_DP).dp.toPx() * scale
+            val glassShader = if (liquid && lensHeightPx > 0.5f) {
+                val dispersion = config.chromaticAberration > 0f
+                val builder = RuntimeShaderBuilder(
+                    if (dispersion) GlassShaders.refractionWithDispersion else GlassShaders.refraction,
+                )
+                builder.child("content", contentShader)
+                builder.uniform("size", size.width * scale, size.height * scale)
+                builder.uniform("offset", 0f, 0f)
+                val scaled = radii.scaledBy(scale)
+                builder.uniform("cornerRadii", scaled[0], scaled[1], scaled[2], scaled[3])
+                builder.uniform("refractionHeight", lensHeightPx)
+                builder.uniform("refractionAmount", -lensAmountPx)
+                builder.uniform("depthEffect", config.depthEffect)
+                if (dispersion) builder.uniform("chromaticAberration", config.chromaticAberration)
+                // Working space back to layout space.
+                builder.makeShader(Matrix33.makeScale(1f / scale))
+            } else {
+                contentShader.makeWithLocalMatrix(Matrix33.makeScale(1f / scale))
+            }
+
+            canvas.save()
+            canvas.clipRRect(outline, true)
+            canvas.drawRect(
+                Rect.makeWH(size.width, size.height),
+                scratch.glassPaint.apply {
+                    shader = glassShader
+                    isAntiAlias = true
+                },
+            )
+            canvas.restore()
+
+            drawRect(color = tint.copy(alpha = opacity))
+
+            if (liquid && config.sheenOpacity > MinVisibleAlpha) {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        0f to Color.White.copy(alpha = config.sheenOpacity),
+                        0.45f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = config.sheenOpacity * 0.5f),
+                    ),
+                )
+            }
+
+            if (drawRim) {
+                val strokeWidth = EdgeHighlightWidth.toPx()
+                val inset = strokeWidth / 2f
+                val rimRadii = FloatArray(4) { (radii[it] - inset).coerceAtLeast(0f) }
+                val alpha = highlightAlpha.coerceIn(0f, 1f)
+                val builder = RuntimeShaderBuilder(GlassShaders.highlight)
+                builder.uniform("size", size.width - strokeWidth, size.height - strokeWidth)
+                builder.uniform("cornerRadii", rimRadii[0], rimRadii[1], rimRadii[2], rimRadii[3])
+                // Premultiplied, as SkSL shaders must return.
+                builder.uniform("color", alpha, alpha, alpha, alpha)
+                builder.uniform("angle", Math.toRadians(rimAngle.value.toDouble()).toFloat())
+                builder.uniform("falloff", 2f)
+                canvas.save()
+                canvas.translate(inset, inset)
+                canvas.drawRRect(
+                    RRect.makeComplexLTRB(
+                        0f,
+                        0f,
+                        size.width - strokeWidth,
+                        size.height - strokeWidth,
+                        rimRadii,
+                    ),
+                    scratch.rimPaint.apply {
+                        shader = builder.makeShader()
+                        this.strokeWidth = strokeWidth
+                    },
+                )
+                canvas.restore()
+            }
+
             drawContent()
         }
 }
 
-private fun saturationColorFilter(saturation: Float): ColorFilter {
-    val invSat = 1f - saturation
-    val r = 0.213f * invSat
-    val g = 0.715f * invSat
-    val b = 0.072f * invSat
-    return ColorFilter.makeMatrix(
-        ColorMatrix(
-            r + saturation, g, b, 0f, 0f,
-            r, g + saturation, b, 0f, 0f,
-            r, g, b + saturation, 0f, 0f,
-            0f, 0f, 0f, 1f, 0f,
-        ),
-    )
+/** Mutable, non-state layout position holder - see the `onPlaced` note above. */
+internal class GlassBounds {
+    var offsetInRoot: Offset = Offset.Zero
 }
 
-/** Corner radii in px, clamped to half the smaller side — the lens shader needs float4. */
-private fun CornerBasedShape.cornerRadii(
-    size: androidx.compose.ui.geometry.Size,
-    layoutDirection: androidx.compose.ui.unit.LayoutDirection,
-    density: androidx.compose.ui.unit.Density,
-): FloatArray {
-    val maxRadius = size.minDimension / 2f
-    val ltr = layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr
-    val topLeft = if (ltr) topStart.toPx(size, density) else topEnd.toPx(size, density)
-    val topRight = if (ltr) topEnd.toPx(size, density) else topStart.toPx(size, density)
-    val bottomRight = if (ltr) bottomEnd.toPx(size, density) else bottomStart.toPx(size, density)
-    val bottomLeft = if (ltr) bottomStart.toPx(size, density) else bottomEnd.toPx(size, density)
-    return floatArrayOf(
-        topLeft.coerceAtMost(maxRadius),
-        topRight.coerceAtMost(maxRadius),
-        bottomRight.coerceAtMost(maxRadius),
-        bottomLeft.coerceAtMost(maxRadius),
+/**
+ * The Android build freezes the rim angle to save battery. On a plugged-in desktop the light
+ * can drift, which is what sells the material as glass rather than a decal. The value is read
+ * inside the draw lambda only, so it invalidates draw without recomposing anything.
+ */
+@Composable
+private fun rememberHighlightAngle(enabled: Boolean): State<Float> {
+    if (!enabled) return remember { mutableStateOf(HighlightAngleFrozen) }
+    val transition = rememberInfiniteTransition(label = "glassHighlight")
+    return transition.animateFloat(
+        initialValue = HighlightAngleMin,
+        targetValue = HighlightAngleMax,
+        animationSpec = infiniteRepeatable(
+            animation = tween(HighlightDriftMillis, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "glassHighlightAngle",
     )
 }
