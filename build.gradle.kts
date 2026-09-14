@@ -23,7 +23,7 @@ compose.desktop {
         jvmArgs += listOf("-Dskiko.renderApi=DIRECT3D")
 
         nativeDistributions {
-            targets(TargetFormat.Msi, TargetFormat.Exe)
+            targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Convx"
             packageVersion = "1.0.0"
             description = "Convx \u2014 Liquid Glass music player for Windows"
