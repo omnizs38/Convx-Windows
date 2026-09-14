@@ -1,80 +1,97 @@
 # Convx for Windows
 
-Native Windows port of [Convx](https://github.com/omnizs38/Convx) — **no Electron, no web view**.
+A desktop music player for Windows built with Kotlin and Compose Multiplatform, rendering a
+full Liquid Glass material through Skia runtime shaders.
 
-* **Stack:** Kotlin 2.1 + Compose Multiplatform Desktop (JVM/Skia) — the same Compose UI toolkit the Android app uses, so screens port over instead of being rewritten in HTML.
-* **Liquid Glass:** the real thing, not a translucent rectangle. The vendored `Kyant0/backdrop` AGSL shaders from the original (`RoundedRectRefraction`, `RoundedRectRefractionWithDispersion`, `DefaultHighlight`) are reused verbatim as SkSL and run through Skia's `RuntimeEffect` on the desktop renderer (Direct3D on Windows). Backdrop capture, saturation/vibrancy, blur, lens refraction, chromatic dispersion and the specular rim all behave as on Android.
-* **Build:** everything happens in GitHub Actions on `windows-latest` — MSI installer, EXE installer and a portable ZIP. No local toolchain, no Gradle wrapper required.
+![License](https://img.shields.io/badge/license-GPL--3.0-blue)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.1.21-7F52FF)
+![Compose](https://img.shields.io/badge/Compose-1.8.2-4285F4)
 
-## Build artifacts
+## What it is
 
-Push to `main` or run the **Build Windows** workflow manually; artifacts appear on the run page.
-Pushing a `v*` tag additionally publishes a GitHub Release with the MSI/EXE/ZIP attached.
+Convx is a native Windows application. It packages as an MSI and an EXE via `jpackage`, runs
+on a bundled JDK 21 runtime, and renders through Direct3D. The window keeps the native
+Windows title bar and system menu, so resize, snap, Win+Arrow tiling and taskbar previews
+all behave exactly as the OS expects - only the client area is drawn by the app.
 
-## Structure
+## Liquid Glass
 
-```
-src/main/kotlin/com/convx/windows/
-  Main.kt                 window + app entry
-  ui/App.kt               demo shell: content backdrop, floating glass nav bar, glass mini player
-  glass/Shaders.kt        SkSL shaders ported 1:1 from the Android app
-  glass/Backdrop.kt       backdrop capture (reused Skia surface snapshot), shared with all glass surfaces
-  glass/GlassEffect.kt    GlassEffectConfig + Modifier.liquidGlass()
-  glass/Skia.kt           Skia helpers: blur sigma, vibrancy matrix, scratch surfaces, corner radii
-```
+The glass material is the point of the project, and it is implemented in full rather than
+approximated with a translucent fill:
 
-## How a glass surface is drawn
+- **Refraction** - a signed-distance field over the rounded rectangle bends the sampled
+  backdrop inward along the edge, so the panel behaves like a lens rather than a blur.
+- **Chromatic dispersion** - an optional seven-tap variant splits the refracted sample per
+  wavelength for a prismatic edge.
+- **Specular rim** - a directional highlight shader traces the corner geometry, with an
+  angle that can drift on a nine second cycle.
+- **Vibrancy** - a saturation colour matrix applied to the sampled backdrop.
+- **Depth** - a radial term added to the refraction gradient for a domed surface.
 
-Per frame, in order: the backdrop subtree is recorded once into an off-screen surface, then each
-glass surface samples the region behind it, boosts vibrancy, blurs, refracts it through the
-rounded-rect lens, tints, gleams and strokes the specular rim.
+Everything the glass samples is captured once per frame into a single backdrop layer at a
+reduced resolution, then reused by every glass surface. The blur radius drives the sampling
+scale, so a heavy blur costs less rather than more.
 
-Everything up to the tint runs in *backdrop working space* (capture scale x per-surface
-`backdropScale`), and the finished shader is scaled back to layout space with a local matrix, so
-the costly passes never touch full-resolution pixels. The rim is drawn at full resolution to stay
-crisp.
+All of it is adjustable at runtime from **Glass & Playback** in the sidebar - style,
+vibrancy, blur radius, surface and sheen opacity, lens height and amount, depth and
+chromatic aberration.
 
-### Fixes over the first cut of the port
+### Architecture note
 
-* **Blur strength matched to Android.** `RenderEffect.createBlurEffect` takes a *radius*, Skia's
-  `makeBlur` takes a Gaussian *sigma*; passing the radius through blurred ~1.7x too hard and made
-  glass read as opaque frost. Now converted (`radius * 0.57735 + 0.5`).
-* **One consistent scale space.** Layout px and working px were mixed, so the lens read far too
-  deep on high-DPI displays. Radii, lens depth/amount and blur sigma are all scaled together now.
-* **No use-after-free.** Snapshots were closed right after being drawn, but Skia can reference an
-  image until the frame is flushed — a source of black/torn glass. The last few snapshots are kept
-  alive and the oldest is freed, so memory stays bounded.
-* **Correct rim colour.** `layout(color)` expects the host to colour-manage the uniform, which
-  Skia's `RuntimeShaderBuilder.uniform(...)` does not; the shader now takes a plain premultiplied
-  `half4`.
-* **Edge sampling.** The sampled region is padded by the blur kernel, so blur and lens never
-  sample past the captured pixels and edges no longer smear.
+Glass surfaces are siblings of the content layer, drawn after it, never nested inside it. A
+glass surface placed inside the recorded subtree would sample the snapshot it is part of.
+That is why the sidebar, top bar, player bar and Now Playing panel sit above the content,
+and why in-page panels use a plain translucent fill.
 
-### Optimizations
+## Interface
 
-* Off-screen surfaces and paints are allocated once per surface and reused; resized only when the
-  surface changes size.
-* Runtime effects are compiled once per process.
-* Layout position is kept in a plain holder read during draw — using Compose state here recomposed
-  the subtree on every scrolled pixel.
-* Backdrop recording is skipped entirely when nothing samples it (`GlassEffectConfig.needsBackdrop`).
-* Heavier blur is sampled at lower resolution (`glassResolutionScale`), down to 30%.
+The layout is the standard desktop three-region shell:
 
-### Improvements over the Android build
+- A persistent glass **sidebar** for navigation.
+- A glass **top bar** with the section title and search.
+- A full-width glass **player bar** with artwork, transport, seek and volume.
+- An expanded **Now Playing** panel, opened by clicking the artwork, which blurs harder than
+  the rest of the chrome.
 
-* The specular rim slowly drifts (~9s) instead of being frozen at 45° — the Android app froze it to
-  save battery, which is not a concern on a plugged-in desktop. Disable with
-  `GlassEffectConfig(animateHighlight = false)`.
-* A subtle top-down inner gleam (`sheenOpacity`) adds thickness to the material; set to `0f` for
-  exact Android parity.
+Desktop affordances throughout: hover states on every control, hand and text cursors, thin
+overlay scrollbars, and a window minimum size. Transport glyphs are drawn as vectors rather
+than typed as font characters, so nothing depends on a symbol font being installed and the
+icons stay crisp at every display scale.
 
-## Porting status
+### Shortcuts
 
-| Area | State |
+| Keys | Action |
 | --- | --- |
-| Liquid Glass design system (blur, refraction, dispersion, rim, tint, per-surface config) | done |
-| App shell: glass nav bar, glass buttons, mini player, scrollable content backdrop | done |
-| Windows packaging via Actions (MSI / EXE / portable ZIP) | done |
-| InnerTube client, playback (Media3 → needs a JVM audio backend), Room DB, lyrics, Discord RPC, Listen Together | next milestones |
+| `Space` | Play / pause |
+| Media keys | Play / pause, next, previous |
+| `Esc` | Close Now Playing |
 
-Licensed GPL-3.0, like the original. Shader sources are Apache-2.0, Copyright 2025 Kyant0.
+## Status
+
+The shell, the glass pipeline and the transport UI are complete. There is no audio engine
+yet - playback state runs on a simulated clock, and the library is sample data. A JVM audio
+backend and an InnerTube client are the next milestones; when they land, nothing in the UI
+layer needs to change.
+
+## Building
+
+Requires JDK 21 and Windows.
+
+```powershell
+.\gradlew run                  # run from source
+.\gradlew createDistributable  # portable app folder
+.\gradlew packageMsi           # MSI installer
+.\gradlew packageExe           # EXE installer
+```
+
+CI builds every push on `windows-latest` and attaches the MSI, the EXE and a portable ZIP to
+tagged releases.
+
+## Licence
+
+GPL-3.0. See [`LICENSE`](LICENSE).
+
+The glass shader sources are vendored from [Kyant0/backdrop](https://github.com/Kyant0/backdrop)
+v2.0.0, Copyright 2025 Kyant0, Apache License 2.0.
+
+Related project: [Convx](https://github.com/omnizs38/Convx).

@@ -1,9 +1,9 @@
 /*
- * Shader sources ported 1:1 from Convx (Android), which vendors them from
- * Kyant0/backdrop v2.0.0 - Copyright 2025 Kyant0, Apache License 2.0.
- * AGSL and SkSL are the same dialect here, so the bodies are unchanged; only the Kotlin
- * wrapper differs (Skia RuntimeEffect instead of Android RuntimeShader), plus one change
- * noted at the highlight shader.
+ * Glass shader sources, vendored from Kyant0/backdrop v2.0.0 -
+ * Copyright 2025 Kyant0, Apache License 2.0.
+ *
+ * The shader bodies are unchanged apart from the one note at the highlight shader below;
+ * the Kotlin wrapper builds them as Skia runtime effects.
  */
 package com.convx.windows.glass
 
@@ -146,11 +146,11 @@ half4 main(float2 coord) {
 }"""
 
 /*
- * Only change from the Android source: `layout(color) uniform half4 color` became a plain
+ * Only change from the vendored source: `layout(color) uniform half4 color` became a plain
  * `uniform half4 color`. `layout(color)` asks the host to colour-manage the value, which
- * Android's `setColorUniform` does but `RuntimeShaderBuilder.uniform(name, r, g, b, a)`
- * does not - the rim came out in the wrong space. Premultiplied values are passed instead,
- * because an SkSL shader must return premultiplied colour.
+ * `RuntimeShaderBuilder.uniform(name, r, g, b, a)` does not do - the rim came out in the
+ * wrong space. Premultiplied values are passed instead, because an SkSL shader must return
+ * premultiplied colour.
  */
 internal const val DefaultHighlightShaderString = """
 uniform float2 size;
