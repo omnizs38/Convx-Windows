@@ -19,10 +19,11 @@ const val DEFAULT_BACKDROP_CAPTURE_SCALE = 0.7f
 internal val AlwaysCapture: () -> Boolean = { true }
 
 /**
- * The Android app captures real pixels with `rememberLayerBackdrop()` attached via
- * `Modifier.layerBackdrop(...)`, and every glass surface holding that reference samples,
- * blurs and refracts them. This is the desktop equivalent: the backdrop subtree is recorded
- * into a reused off-screen Skia surface and the snapshot is shared with all glass surfaces.
+ * The pixels every glass surface samples, blurs and refracts.
+ *
+ * The subtree marked with [Modifier.layerBackdrop] is recorded once per frame into a reused
+ * off-screen Skia surface, and the resulting snapshot is shared by every glass surface
+ * holding this reference - so N glass panels cost one capture, not N.
  *
  * Deliberately *not* Compose state: the snapshot is written during the draw phase, and
  * writing state there would either be dropped or spin an invalidation loop. Backdrop content
@@ -56,10 +57,10 @@ fun rememberLayerBackdrop(): LayerBackdrop = remember { LayerBackdrop() }
 /**
  * Records this subtree into [backdrop], then draws it normally.
  *
- * [captureScale] mirrors the Android port's backdrop resolution scale: blur hides the
- * upscale, so the capture is cheaper than the surfaces it feeds. [enabled] lets the caller
- * skip recording entirely - with every glass component switched off nothing samples the
- * backdrop, and recording it is pure cost (`GlassEffectConfig.anyComponentEnabled`).
+ * [captureScale] records at a fraction of layout resolution: the blur hides the upscale, so
+ * the capture is cheaper than the surfaces it feeds. [enabled] lets the caller skip recording
+ * entirely - with the transparent glass style nothing samples the backdrop, and recording it
+ * is pure cost (see `GlassEffectConfig.needsBackdrop`).
  */
 @Composable
 fun Modifier.layerBackdrop(

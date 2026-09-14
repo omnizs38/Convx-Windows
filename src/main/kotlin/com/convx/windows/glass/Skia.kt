@@ -12,11 +12,10 @@ import org.jetbrains.skia.PaintMode
 import org.jetbrains.skia.Surface
 
 /**
- * Android's `RenderEffect.createBlurEffect` takes a *radius*; Skia's `ImageFilter.makeBlur`
- * takes a Gaussian *sigma*. Feeding the radius straight into Skia (the first cut of this
- * port did) blurs roughly 1.7x too hard, so glass pills read as opaque frost instead of the
- * near-clear material the Android app shows at its 2dp default. This is the same conversion
- * the platform applies internally.
+ * Blur strength is configured as a *radius* in dp, but Skia's `ImageFilter.makeBlur` takes a
+ * Gaussian *sigma*. Feeding the radius straight in (the first cut of this code did) blurs
+ * roughly 1.7x too hard, so glass pills read as opaque frost instead of the near-clear
+ * material intended at the 2dp default.
  */
 internal fun blurRadiusToSigma(radius: Float): Float =
     if (radius <= 0f) 0f else radius * 0.57735f + 0.5f
@@ -25,9 +24,9 @@ internal fun blurRadiusToSigma(radius: Float): Float =
 internal const val BlurPaddingFactor = 3f
 
 /**
- * The saturation half of the Android app's `colorControls` matrix. Skia's ColorMatrix uses
- * normalised translation (0..1) rather than Android's 0..255, so only the 3x3 part is ported;
- * brightness/contrast are not used by any Convx surface.
+ * Vibrancy, as a saturation colour matrix over the sampled backdrop. Skia's ColorMatrix uses
+ * normalised translation (0..1), and only the 3x3 saturation part is needed here -
+ * brightness and contrast are not used by any Convx surface.
  */
 internal fun saturationColorFilter(saturation: Float): ColorFilter {
     val invSat = 1f - saturation
@@ -113,8 +112,7 @@ internal class GlassScratch {
 
 /**
  * Corner radii in px, clamped to half the shorter side. The lens and highlight shaders take a
- * `float4` of radii, and the Android port resolves start/end against the layout direction the
- * same way.
+ * `float4` of radii, with start/end corners resolved against the layout direction.
  */
 internal fun CornerBasedShape.cornerRadiiPx(
     size: Size,
