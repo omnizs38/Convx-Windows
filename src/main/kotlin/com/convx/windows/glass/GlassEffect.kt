@@ -42,7 +42,7 @@ import kotlin.math.ceil
 /** Largest lens depth, in dp, that `lensHeight` interpolates towards. */
 const val LENS_MAX_DP = 48f
 
-/** The now-playing sheet blurs far harder than the rest of the chrome. */
+/** The expanded Now Playing panel blurs far harder than the rest of the chrome. */
 const val PLAYER_BLUR_MULTIPLIER = 4f
 
 const val MIN_GLASS_RESOLUTION_SCALE = 0.30f
@@ -51,7 +51,7 @@ const val FULL_QUALITY_BLUR_DP = 8f
 val EdgeHighlightWidth: Dp = 0.8.dp
 const val EdgeHighlightAlpha = 0.55f
 
-/** Angle the Android build freezes the specular rim at. */
+/** Static rim angle used when highlight drift is switched off. */
 const val HighlightAngleFrozen = 45f
 
 private const val HighlightAngleMin = 28f
@@ -84,7 +84,7 @@ data class GlassEffectConfig(
     val chromaticAberration: Float = 0f,
     val surfaceTintColor: Color = Color.Unspecified,
     val surfaceOpacity: Float = 0.5f,
-    /** Slight top-down inner gleam. Not in the Android build; see README. */
+    /** Slight top-down inner gleam. */
     val sheenOpacity: Float = 0.08f,
     /** Drifts the specular rim instead of freezing it at [HighlightAngleFrozen]. */
     val animateHighlight: Boolean = true,
@@ -96,12 +96,12 @@ data class GlassEffectConfig(
 val LocalGlassEffectConfig = staticCompositionLocalOf { GlassEffectConfig() }
 val LocalAppBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 
-/** Vibrancy maps to saturation exactly as in the Android app. */
+/** Vibrancy expressed as a saturation multiplier for the sampled backdrop. */
 fun glassSaturation(vibrancy: Float): Float = 1f + 0.5f * vibrancy
 
 /**
- * Heavier blur destroys detail, so it can be sampled at a lower resolution for free.
- * Matches the Android curve: full resolution up to a light blur, tapering to a floor.
+ * Heavier blur destroys detail, so it can be sampled at a lower resolution for free: full
+ * resolution up to a light blur, then tapering to a floor.
  */
 fun glassResolutionScale(blurRadiusDp: Float): Float =
     if (blurRadiusDp <= 0f) {
@@ -117,15 +117,15 @@ fun shouldUseTranslucentGlassFallback(style: GlassStyle, surfaceOpacity: Float):
 /**
  * Applies the Convx liquid glass material to this surface.
  *
- * The pipeline is the Android one, in order: sample the backdrop region behind the surface,
- * boost vibrancy, blur, refract through a rounded-rect lens, tint, gleam, rim.
+ * The pipeline, in order: sample the backdrop region behind the surface, boost vibrancy,
+ * blur, refract through a rounded-rect lens, tint, gleam, rim.
  *
  * Everything except the tint, the gleam and the rim runs in *backdrop working space* -
  * backdrop capture scale times [backdropScale] - and the finished shader is scaled back up
  * with a local matrix. That keeps the expensive passes off full-resolution pixels, and it is
  * also why the shader uniforms (radii, lens depth, lens amount, blur sigma) are all scaled:
- * the first cut of this port mixed layout px with working px and the lens read far too deep
- * on high-DPI displays.
+ * an early cut of this code mixed layout px with working px and the lens read far too deep
+ * on high-DPI displays, which is exactly where Windows scaling puts most machines.
  */
 @Composable
 fun Modifier.liquidGlass(
@@ -328,9 +328,10 @@ internal class GlassBounds {
 }
 
 /**
- * The Android build freezes the rim angle to save battery. On a plugged-in desktop the light
- * can drift, which is what sells the material as glass rather than a decal. The value is read
- * inside the draw lambda only, so it invalidates draw without recomposing anything.
+ * Drifts the specular rim angle on a slow cycle. A mains-powered desktop can afford to let
+ * the light move, and that movement is what sells the material as glass rather than a decal.
+ * The value is read inside the draw lambda only, so it invalidates draw without recomposing
+ * anything. Switch it off with `GlassEffectConfig.animateHighlight` to pin the angle.
  */
 @Composable
 private fun rememberHighlightAngle(enabled: Boolean): State<Float> {
