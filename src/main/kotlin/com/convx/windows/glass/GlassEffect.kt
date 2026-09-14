@@ -247,7 +247,18 @@ fun Modifier.liquidGlass(
                 // Working space back to layout space.
                 builder.makeShader(Matrix33.makeScale(1f / scale))
             } else {
-                contentShader.makeWithLocalMatrix(Matrix33.makeScale(1f / scale))
+                // Rebuild the shader from the sampled image with the working-to-layout
+                // scale folded into the existing pad translate. Shader.makeWithLocalMatrix
+                // was removed from Skiko, so concatenate the matrices up front instead.
+                sampled.makeShader(
+                    FilterTileMode.CLAMP,
+                    FilterTileMode.CLAMP,
+                    SamplingMode.LINEAR,
+                    Matrix33.makeConcat(
+                        Matrix33.makeScale(1f / scale),
+                        Matrix33.makeTranslate(-pad.toFloat(), -pad.toFloat()),
+                    ),
+                )
             }
 
             canvas.save()
