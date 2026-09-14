@@ -247,16 +247,20 @@ fun Modifier.liquidGlass(
                 // Working space back to layout space.
                 builder.makeShader(Matrix33.makeScale(1f / scale))
             } else {
-                // Rebuild the shader from the sampled image with the working-to-layout
-                // scale folded into the existing pad translate. Shader.makeWithLocalMatrix
-                // was removed from Skiko, so concatenate the matrices up front instead.
+                // Rebuild the shader from the sampled image with the working-to-layout scale
+                // folded into the pad translate. Skiko has neither Shader.makeWithLocalMatrix
+                // nor Matrix33.makeConcat here, so write the row-major matrix out directly:
+                // scale(1/scale) * translate(-pad, -pad).
+                val inv = 1f / scale
+                val shift = -pad.toFloat() * inv
                 sampled.makeShader(
                     FilterTileMode.CLAMP,
                     FilterTileMode.CLAMP,
                     SamplingMode.LINEAR,
-                    Matrix33.makeConcat(
-                        Matrix33.makeScale(1f / scale),
-                        Matrix33.makeTranslate(-pad.toFloat(), -pad.toFloat()),
+                    Matrix33(
+                        inv, 0f, shift,
+                        0f, inv, shift,
+                        0f, 0f, 1f,
                     ),
                 )
             }
