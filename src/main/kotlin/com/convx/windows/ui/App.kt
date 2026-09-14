@@ -14,8 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -46,9 +44,9 @@ import com.convx.windows.glass.liquidGlass
 import com.convx.windows.glass.rememberLayerBackdrop
 
 /**
- * Shell for the Windows port: the scrollable library is the backdrop, and the
- * floating nav bar, the circular buttons and the mini player are glass surfaces
- * sampling it -- the same composition the Android app uses.
+ * Shell for the Windows port: the library is the backdrop, and the floating nav bar, the
+ * circular buttons and the mini player are glass surfaces sampling it - the same composition
+ * the Android app uses.
  */
 @Composable
 fun ConvxApp() {
@@ -61,10 +59,10 @@ fun ConvxApp() {
             LocalGlassEffectConfig provides config,
         ) {
             Box(Modifier.fillMaxSize().background(Color(0xFF07070A))) {
-                Library(backdrop)
+                Library(backdrop, captureEnabled = { config.needsBackdrop })
 
-                GlassButton(Modifier.align(Alignment.TopStart).padding(24.dp), "‹")
-                GlassButton(Modifier.align(Alignment.TopEnd).padding(24.dp), "⇪")
+                GlassButton(Modifier.align(Alignment.TopStart).padding(24.dp), "\u2039")
+                GlassButton(Modifier.align(Alignment.TopEnd).padding(24.dp), "\u21EA")
 
                 Column(
                     Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp),
@@ -80,8 +78,8 @@ fun ConvxApp() {
 }
 
 @Composable
-private fun Library(backdrop: LayerBackdrop) {
-    Box(
+private fun Library(backdrop: LayerBackdrop, captureEnabled: () -> Boolean) {
+    Column(
         Modifier
             .fillMaxSize()
             .background(
@@ -91,49 +89,51 @@ private fun Library(backdrop: LayerBackdrop) {
                     end = Offset(1400f, 1000f),
                 ),
             )
-            .layerBackdrop(backdrop),
+            .layerBackdrop(backdrop, enabled = captureEnabled)
+            .padding(40.dp),
     ) {
-        Column(Modifier.fillMaxSize().padding(40.dp)) {
-            Text("Listen Now", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
-            LazyRow(
-                Modifier.padding(top = 24.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                items(List(6) { it }) { i -> Artwork(i, 190.dp) }
-            }
-            Text(
-                "Your library",
-                color = Color.White,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(top = 36.dp, bottom = 16.dp),
-            )
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(150.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                items(List(12) { it + 3 }) { i -> Artwork(i, 150.dp) }
-            }
+        Text("Listen Now", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+        LazyRow(
+            Modifier.padding(top = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            items(count = 6) { index -> Artwork(index, 190.dp) }
+        }
+        Text(
+            "Your library",
+            color = Color.White,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 36.dp, bottom = 16.dp),
+        )
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(150.dp),
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            items(count = 12) { index -> Artwork(index + 3, 150.dp) }
         }
     }
 }
 
+private val ArtworkPalette = listOf(
+    Color(0xFFE05B7A) to Color(0xFF7B2BE0),
+    Color(0xFF41C3F0) to Color(0xFF1B4BE0),
+    Color(0xFFF5B944) to Color(0xFFE0542B),
+    Color(0xFF63E08A) to Color(0xFF128A7B),
+    Color(0xFFB98BFF) to Color(0xFF3B2BE0),
+    Color(0xFFFF8FB1) to Color(0xFF8A1246),
+)
+
 @Composable
 private fun Artwork(index: Int, size: Dp) {
-    val palette = listOf(
-        Color(0xFFE05B7A) to Color(0xFF7B2BE0),
-        Color(0xFF41C3F0) to Color(0xFF1B4BE0),
-        Color(0xFFF5B944) to Color(0xFFE0542B),
-        Color(0xFF63E08A) to Color(0xFF128A7B),
-        Color(0xFFB98BFF) to Color(0xFF3B2BE0),
-        Color(0xFFFF8FB1) to Color(0xFF8A1246),
-    )
-    val (a, b) = palette[index % palette.size]
+    val (start, end) = ArtworkPalette[index.mod(ArtworkPalette.size)]
     Box(
-        Modifier.size(size)
+        Modifier
+            .size(size)
             .clip(RoundedCornerShape(18.dp))
-            .background(Brush.linearGradient(listOf(a, b))),
+            .background(Brush.linearGradient(listOf(start, end))),
     )
 }
 
@@ -165,16 +165,16 @@ private fun MiniPlayer() {
             Text("Weightless", color = Color.White, fontWeight = FontWeight.SemiBold)
             Text("Marconi Union", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
         }
-        Text("⏮", color = Color.White, fontSize = 18.sp)
-        Text("⏸", color = Color.White, fontSize = 22.sp)
-        Text("⏭", color = Color.White, fontSize = 18.sp)
+        Text("\u23EE", color = Color.White, fontSize = 18.sp)
+        Text("\u23F8", color = Color.White, fontSize = 22.sp)
+        Text("\u23ED", color = Color.White, fontSize = 18.sp)
     }
 }
 
 @Composable
 private fun NavBar() {
     var selected by remember { mutableStateOf(0) }
-    val tabs = listOf("Home", "Explore", "Library", "Search")
+    val tabs = remember { listOf("Home", "Explore", "Library", "Search") }
     Row(
         Modifier
             .height(62.dp)
@@ -192,7 +192,9 @@ private fun NavBar() {
             Box(
                 Modifier
                     .clip(RoundedCornerShape(24.dp))
-                    .background(if (isSelected) Color.White.copy(alpha = 0.18f) else Color.Transparent)
+                    .background(
+                        if (isSelected) Color.White.copy(alpha = 0.18f) else Color.Transparent,
+                    )
                     .clickable { selected = index }
                     .padding(horizontal = 20.dp, vertical = 12.dp),
             ) {
